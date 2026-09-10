@@ -16,13 +16,12 @@ In this test, we instantiate a data parallel worker with N GPUs (auto-detected).
 """
 
 import ray
-import tensordict
 import torch
 from codetiming import Timer
-from packaging import version
 from torch import distributed as dist
 
 from verl import DataProto
+from verl.runtime import ClassWithInitArgs, Runtime
 from verl.single_controller.base import Worker
 from verl.single_controller.base.decorator import Dispatch, register
 from verl.single_controller.ray import RayClassWithInitArgs, RayResourcePool, RayWorkerGroup
@@ -30,7 +29,6 @@ from verl.utils.device import get_device_name
 from verl.utils.ray_utils import parallel_put
 
 
-@ray.remote
 class DummyWorker(Worker):
     def __init__(self):
         super().__init__()
@@ -40,17 +38,16 @@ class DummyWorker(Worker):
     def do_nothing(self, data):
         for key in data.batch.keys():
             data.batch[key] += 1
-        if version.parse(tensordict.__version__) >= version.parse("0.5.0"):
-            data.batch = data.batch.consolidate()
-        return data
+        return data.consolidate()
 
 
 def test_data_transfer():
     ray.init()
+    runtime = Runtime.from_config({"backend": "ray", "ray": {}})
     # construct resource pool
     ngpus = torch.cuda.device_count()
     resource_pool = RayResourcePool([ngpus])
-    cls_with_init = RayClassWithInitArgs(cls=DummyWorker)
+    cls_with_init = RayClassWithInitArgs.from_class_init(ClassWithInitArgs(cls=DummyWorker))
     # construct worker group
     wg = RayWorkerGroup(resource_pool, cls_with_init, device_name=get_device_name())
 
@@ -71,9 +68,7 @@ def test_data_transfer():
     data_list = data.chunk(wg.world_size)
 
     for i in range(wg.world_size):
-        # consolidate is necessary
-        if version.parse(tensordict.__version__) >= version.parse("0.5.0"):
-            data_list[i].batch = data_list[i].batch.consolidate()
+        data_list[i] = data_list[i].consolidate()
 
     with Timer(name="ray.pickle", initial_text=True):
         for i in range(wg.world_size):
@@ -97,7 +92,7 @@ def test_data_transfer():
 
     with Timer(name="get", initial_text=True):
         # takes around 40 seconds
-        output_lst = ray.get(output_ref)
+        output_lst = output_ref.result()
 
     for input_data, output_data in zip(data_list, output_lst, strict=True):
         for key in input_data.batch.keys():
@@ -107,4 +102,5 @@ def test_data_transfer():
                 key,
             )
 
+    runtime.close()
     ray.shutdown()

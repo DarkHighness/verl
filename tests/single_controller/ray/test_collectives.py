@@ -24,12 +24,12 @@ import ray
 import ray.util.collective as collective
 import torch
 
+from verl.runtime import ClassWithInitArgs, Runtime
 from verl.single_controller.base import Worker
 from verl.single_controller.base.decorator import Dispatch, register
 from verl.single_controller.ray import RayClassWithInitArgs, RayResourcePool, RayWorkerGroup
 
 
-@ray.remote
 class Actor(Worker):
     @register(Dispatch.ONE_TO_ALL)
     def init(self):
@@ -43,7 +43,6 @@ class Actor(Worker):
         collective.send(tensor=tensor, dst_rank=1, group_name=self.group_name)
 
 
-@ray.remote
 class Rollout(Worker):
     @register(Dispatch.ONE_TO_ALL)
     def init(self):
@@ -70,6 +69,7 @@ class Rollout(Worker):
 
 def test_ray_collective_group():
     ray.init()
+    runtime = Runtime.from_config({"backend": "ray", "ray": {}})
     ngpus = torch.cuda.device_count()
     n_rollout = max(1, ngpus // 3)  # keep 2:1 actor:rollout ratio
     n_actor = n_rollout * 2
@@ -77,8 +77,8 @@ def test_ray_collective_group():
     actor_resource_pool = RayResourcePool([n_actor])
     rollout_resource_pool = RayResourcePool([n_rollout])
 
-    actor_cls = RayClassWithInitArgs(cls=Actor)
-    rollout_cls = RayClassWithInitArgs(cls=Rollout)
+    actor_cls = RayClassWithInitArgs.from_class_init(ClassWithInitArgs(cls=Actor))
+    rollout_cls = RayClassWithInitArgs.from_class_init(ClassWithInitArgs(cls=Rollout))
 
     actor_wg = RayWorkerGroup(
         resource_pool=actor_resource_pool, ray_cls_with_init=actor_cls, name_prefix="collective_group_actor"
@@ -94,8 +94,8 @@ def test_ray_collective_group():
     out2 = rollout_wg.receive_tensors()
 
     # block to wait
-    ray.get(out1)
-    ray.get(out2)
+    out1.result()
+    out2.result()
 
     output = {}
     for d in rollout_wg.get_tensors():
@@ -106,6 +106,7 @@ def test_ray_collective_group():
     for i in range(n_actor):
         assert torch.sum(output[f"src_{i}"]).item() == 4 * i
 
+    runtime.close()
     ray.shutdown()
 
 

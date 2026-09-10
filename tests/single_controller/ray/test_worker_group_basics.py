@@ -18,6 +18,7 @@ e2e test verl.single_controller.ray
 import ray
 import torch
 
+from verl.runtime import ClassWithInitArgs, RemoteCall, Runtime
 from verl.single_controller.base.decorator import Dispatch, Execute, collect_all_to_all, register
 from verl.single_controller.base.worker import Worker
 from verl.single_controller.ray.base import RayClassWithInitArgs, RayResourcePool, RayWorkerGroup
@@ -52,7 +53,6 @@ def get_ray_remote_options() -> str:
     return dict(num_cpus=0.1)
 
 
-@ray.remote
 class TestActor(Worker):
     # TODO: pass *args and **kwargs is bug prone and not very convincing
     def __init__(self, x) -> None:
@@ -81,7 +81,7 @@ class TestActor(Worker):
 
 @ray.remote(num_cpus=0.1)
 def remote_call_wg(worker_names):
-    class_with_args = RayClassWithInitArgs(cls=TestActor, x=2)
+    class_with_args = RayClassWithInitArgs.from_class_init(ClassWithInitArgs(cls=TestActor, x=2))
     worker_group = RayWorkerGroup.from_detached(
         worker_names=worker_names, ray_cls_with_init=class_with_args, name_prefix=None
     )
@@ -105,10 +105,11 @@ def add_one(data):
 
 def test_basics():
     ray.init(num_cpus=100)
+    runtime = Runtime.from_config({"backend": "ray", "ray": {}})
 
     # create 4 workers, each hold a GPU
     resource_pool = RayResourcePool([4], use_gpu=True)
-    class_with_args = RayClassWithInitArgs(cls=TestActor, x=2)
+    class_with_args = RayClassWithInitArgs.from_class_init(ClassWithInitArgs(cls=TestActor, x=2))
 
     worker_group = RayWorkerGroup(
         resource_pool=resource_pool,
@@ -123,23 +124,24 @@ def test_basics():
     output = worker_group.execute_all_sync("foo", y=3)
     assert output == [5, 5, 5, 5]
 
-    # this is a list of object reference. It won't block.
+    # Non-blocking execute returns one RemoteCall per rank.
     output_ref = worker_group.execute_all_async("foo", y=4)
     print(output_ref)
 
-    assert ray.get(output_ref) == [6, 6, 6, 6]
+    assert RemoteCall.gather(output_ref).result() == [6, 6, 6, 6]
 
     output_ref = worker_group.foo_one_to_all(x=1, y=2)
-    assert ray.get(output_ref) == [5, 5, 5, 5]
+    assert output_ref.result() == [5, 5, 5, 5]
 
     output_ref = worker_group.foo_all_to_all(x=[1, 2, 3, 4], y=[5, 6, 7, 8])
-    assert ray.get(output_ref) == [8, 10, 12, 14]
+    assert output_ref.result() == [8, 10, 12, 14]
 
     print(ray.get(remote_call_wg.remote(worker_group.worker_names)))
 
     output = worker_group.execute_func_rank_zero(add_one, torch.ones(2, 2))
     torch.testing.assert_close(output, torch.ones(2, 2) + 1)
 
+    runtime.close()
     ray.shutdown()
 
 

@@ -15,28 +15,17 @@
 import asyncio
 import time
 
-import pytest
-import ray
 import torch
 from tensordict import TensorDict
 
 from verl.protocol import DataProto, DataProtoFuture
+from verl.runtime import ClassWithInitArgs, RemoteCall
 from verl.single_controller.base.decorator import Dispatch, make_nd_compute_dataproto_dispatch_fn, register
 from verl.single_controller.base.worker import Worker
-from verl.single_controller.ray import RayClassWithInitArgs, RayResourcePool, RayWorkerGroup
 from verl.utils import tensordict_utils as tu
 
 
-# Pytest fixture for Ray setup/teardown
-@pytest.fixture
-def ray_init_shutdown():
-    ray.init(num_cpus=100)
-    yield
-    ray.shutdown()
-
-
 # Define a simple worker for testing
-@ray.remote
 class DecoratorTestWorker(Worker):
     def __init__(self, initial_value=0):
         super().__init__()
@@ -79,17 +68,17 @@ class DecoratorTestWorker(Worker):
 
 
 # Test function for synchronous DP compute
-def test_decorator_dp_compute(ray_init_shutdown):
+def test_decorator_dp_compute(ray_only_runtime):
     """
     Tests the default behavior of a synchronous decorated method with DP_COMPUTE_PROTO.
     Verifies the result correctness.
     """
     num_workers = 2
-    resource_pool = RayResourcePool([num_workers], use_gpu=False, max_colocate_count=1)  # Use CPU for simplicity
-    cls_with_args = RayClassWithInitArgs(cls=DecoratorTestWorker, initial_value=10)
-    worker_group = RayWorkerGroup(
-        resource_pool, cls_with_args, name_prefix=f"decorator_test_sync_dp_{int(time.time())}"
-    )
+    resource_pool = ray_only_runtime.create_resource_pool(
+        nnodes=1, processes_per_node=num_workers, device_type="cpu"
+    )  # Use CPU for simplicity
+    cls_with_args = ClassWithInitArgs(cls=DecoratorTestWorker, initial_value=10)
+    worker_group = ray_only_runtime.create_worker_group(cls_with_args, on=resource_pool)
 
     # Prepare input data (size 4, for 2 workers)
     input_tensor = torch.arange(4, dtype=torch.float32)
@@ -115,17 +104,15 @@ def test_decorator_dp_compute(ray_init_shutdown):
 
 
 # Test function for async def method with DP compute
-def test_decorator_async_function(ray_init_shutdown):
+def test_decorator_async_function(ray_only_runtime):
     """
     Tests the decorator with an `async def` method using DP_COMPUTE_PROTO.
     Verifies that the call returns a future and the result is correct after .get().
     """
     num_workers = 2
-    resource_pool = RayResourcePool([num_workers], use_gpu=False, max_colocate_count=1)
-    cls_with_args = RayClassWithInitArgs(cls=DecoratorTestWorker, initial_value=5)
-    worker_group = RayWorkerGroup(
-        resource_pool, cls_with_args, name_prefix=f"decorator_test_async_dp_{int(time.time())}"
-    )
+    resource_pool = ray_only_runtime.create_resource_pool(nnodes=1, processes_per_node=num_workers, device_type="cpu")
+    cls_with_args = ClassWithInitArgs(cls=DecoratorTestWorker, initial_value=5)
+    worker_group = ray_only_runtime.create_worker_group(cls_with_args, on=resource_pool)
 
     # Prepare input data (size 4, for 2 workers)
     input_tensor = torch.arange(4, dtype=torch.float32)
@@ -136,6 +123,7 @@ def test_decorator_async_function(ray_init_shutdown):
 
     # Assert that the call returned a future
     assert isinstance(future_output, DataProtoFuture), "Expected DataProtoFuture for async def call"
+    assert all(isinstance(call, RemoteCall) for call in future_output.futures)
 
     # Get the result (this should block)
     result_data = future_output.get()
@@ -157,14 +145,22 @@ def test_decorator_async_function(ray_init_shutdown):
         result_data.batch["output_async"], expected_output, msg="Async DP compute output data mismatch"
     )
 
+    # Chaining a DataProtoFuture back into a blocking DP_COMPUTE_PROTO call must
+    # split it per rank and reassemble in rank order, just like a plain DataProto.
+    # dp_compute reads the original "input" carried along by the future.
+    chained = worker_group.dp_compute(future_output)
+    assert isinstance(chained, DataProto)
+    expected_chained = input_tensor + 5 + torch.tensor([0, 0, 1, 1], dtype=torch.float32)
+    torch.testing.assert_close(chained.batch["output"], expected_chained)
 
-def test_decorator_dp_compute_td(ray_init_shutdown):
+
+def test_decorator_dp_compute_td(ray_only_runtime):
     num_workers = 2
-    resource_pool = RayResourcePool([num_workers], use_gpu=False, max_colocate_count=1)  # Use CPU for simplicity
-    cls_with_args = RayClassWithInitArgs(cls=DecoratorTestWorker, initial_value=10)
-    worker_group = RayWorkerGroup(
-        resource_pool, cls_with_args, name_prefix=f"decorator_test_sync_dp_{int(time.time())}"
-    )
+    resource_pool = ray_only_runtime.create_resource_pool(
+        nnodes=1, processes_per_node=num_workers, device_type="cpu"
+    )  # Use CPU for simplicity
+    cls_with_args = ClassWithInitArgs(cls=DecoratorTestWorker, initial_value=10)
+    worker_group = ray_only_runtime.create_worker_group(cls_with_args, on=resource_pool)
 
     # Prepare input data (size 4, for 2 workers)
     input_tensor = torch.arange(4, dtype=torch.float32)

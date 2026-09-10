@@ -20,12 +20,12 @@ from tensordict import TensorDict
 
 import verl.utils.tensordict_utils as tu
 from verl import DataProto
+from verl.runtime import ClassWithInitArgs, Runtime
 from verl.single_controller.base import Worker
 from verl.single_controller.base.decorator import make_nd_compute_dataproto_dispatch_fn, register
 from verl.utils.device import get_device_name, get_nccl_backend
 
 
-@ray.remote
 class TestActor(Worker):
     def __init__(self):
         super().__init__()
@@ -106,11 +106,12 @@ def test_dist_global_info_wg():
     from verl.single_controller.ray import RayClassWithInitArgs, RayResourcePool, RayWorkerGroup
 
     ray.init()
+    runtime = Runtime.from_config({"backend": "ray", "ray": {}})
     ngpus = torch.cuda.device_count()
     infer_tp = ngpus // 2
     train_tp = ngpus // 4
 
-    ray_cls = RayClassWithInitArgs(TestActor)
+    ray_cls = RayClassWithInitArgs.from_class_init(ClassWithInitArgs(TestActor))
     resource_pool = RayResourcePool(process_on_nodes=[ngpus])
     wg = RayWorkerGroup(resource_pool=resource_pool, ray_cls_with_init=ray_cls, device_name=get_device_name())
 
@@ -157,6 +158,7 @@ def test_dist_global_info_wg():
 
     assert torch.all(torch.eq(output["input_ids"].values(), expected.values()))
 
+    runtime.close()
     ray.shutdown()
 
 

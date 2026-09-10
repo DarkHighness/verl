@@ -13,20 +13,19 @@
 # limitations under the License.
 
 import numpy as np
-import ray
+import pytest
 import torch
 
 from verl import DataProto
 from verl.protocol import DataProtoConfig
+from verl.runtime import ClassWithInitArgs
 from verl.single_controller.base import Worker
 from verl.single_controller.base.decorator import Dispatch, register
-from verl.single_controller.ray.base import RayClassWithInitArgs, RayResourcePool, RayWorkerGroup
 
 # or set env var VERL_AUTO_PADDING = "1" / "true"
 DataProtoConfig.auto_padding = True
 
 
-@ray.remote
 class Actor(Worker):
     def __init__(self) -> None:
         super().__init__()
@@ -37,13 +36,11 @@ class Actor(Worker):
         return data
 
 
-def test_auto_padding():
-    ray.init(num_cpus=100)
-
+def test_auto_padding(ray_only_runtime):
     chunk_size = 4
-    actor_cls = RayClassWithInitArgs(cls=Actor)
-    resource_pool = RayResourcePool(process_on_nodes=[chunk_size], use_gpu=False)
-    actor_wg = RayWorkerGroup(resource_pool=resource_pool, ray_cls_with_init=actor_cls)
+    actor_cls = ClassWithInitArgs(cls=Actor)
+    resource_pool = ray_only_runtime.create_resource_pool(nnodes=1, processes_per_node=chunk_size, device_type="cpu")
+    actor_wg = ray_only_runtime.create_worker_group(actor_cls, on=resource_pool)
 
     # test locally first
     for test_size in range(4, 20):
@@ -145,8 +142,6 @@ def test_auto_padding():
     print(output.batch["a"])
     assert len(output) == 8, "Failed in kwargs split and padding."
 
-    ray.shutdown()
-
 
 if __name__ == "__main__":
-    test_auto_padding()
+    raise SystemExit(pytest.main([__file__]))

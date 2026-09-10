@@ -17,14 +17,13 @@ e2e test verl.single_controller.ray
 
 import os
 
-import ray
+import pytest
 
-from verl.single_controller.base.worker import Worker
-from verl.single_controller.ray.base import RayClassWithInitArgs, RayResourcePool, RayWorkerGroup
+from verl.runtime import ClassWithInitArgs, Worker
+from verl.single_controller.ray.base import RayClassWithInitArgs, RayWorkerGroup
 
 
-@ray.remote
-class TestActor(Worker):
+class EnvWorker(Worker):
     def __init__(self) -> None:
         super().__init__()
 
@@ -33,12 +32,10 @@ class TestActor(Worker):
         return val
 
 
-def test_basics():
-    ray.init(num_cpus=100)
-
-    # create 4 workers, each hold a GPU
-    resource_pool = RayResourcePool([4], use_gpu=False)
-    class_with_args = RayClassWithInitArgs(cls=TestActor)
+def test_basics(ray_only_runtime):
+    # Create four CPU workers under the initialized Runtime.
+    resource_pool = ray_only_runtime.create_resource_pool(nnodes=1, processes_per_node=4, device_type="cpu")
+    class_with_args = RayClassWithInitArgs.from_class_init(ClassWithInitArgs(EnvWorker))
 
     worker_group = RayWorkerGroup(
         resource_pool=resource_pool, ray_cls_with_init=class_with_args, name_prefix="worker_group_basic"
@@ -46,16 +43,13 @@ def test_basics():
 
     output = worker_group.execute_all_sync("getenv", key="RAY_LOCAL_WORLD_SIZE")
     assert output == ["4", "4", "4", "4"]
+    worker_group.close()
 
-    ray.shutdown()
 
-
-def test_customized_worker_env():
-    ray.init(num_cpus=100)
-
-    # create 4 workers, each hold a GPU
-    resource_pool = RayResourcePool([4], use_gpu=False)
-    class_with_args = RayClassWithInitArgs(cls=TestActor)
+def test_customized_env_vars(ray_only_runtime):
+    # Create four CPU workers under the initialized Runtime.
+    resource_pool = ray_only_runtime.create_resource_pool(nnodes=1, processes_per_node=4, device_type="cpu")
+    class_with_args = RayClassWithInitArgs.from_class_init(ClassWithInitArgs(EnvWorker))
 
     worker_group = RayWorkerGroup(
         resource_pool=resource_pool,
@@ -68,6 +62,7 @@ def test_customized_worker_env():
 
     output = worker_group.execute_all_sync("getenv", key="test_key")
     assert output == ["test_value", "test_value", "test_value", "test_value"]
+    worker_group.close()
 
     try:
         worker_group = RayWorkerGroup(
@@ -83,9 +78,6 @@ def test_customized_worker_env():
     else:
         raise ValueError("test failed")
 
-    ray.shutdown()
-
 
 if __name__ == "__main__":
-    test_basics()
-    test_customized_worker_env()
+    raise SystemExit(pytest.main([__file__]))

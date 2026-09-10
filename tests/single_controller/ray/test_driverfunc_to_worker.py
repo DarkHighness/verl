@@ -19,6 +19,7 @@ import torch
 from tensordict import TensorDict
 
 from verl import DataProto
+from verl.runtime import ClassWithInitArgs, Runtime
 from verl.single_controller.base.worker import Worker
 from verl.single_controller.ray import RayWorkerGroup
 from verl.single_controller.ray.base import RayClassWithInitArgs, RayResourcePool
@@ -28,7 +29,6 @@ os.environ["RAY_DEDUP_LOGS"] = "0"
 os.environ["NCCL_DEBUG"] = "WARN"
 
 
-@ray.remote
 class ModelActor(Worker):
     def __init__(self):
         pass
@@ -55,11 +55,12 @@ def get_aux_metrics(self, test_proto):
 def test():
     # construct model
     ray.init()
+    runtime = Runtime.from_config({"backend": "ray", "ray": {}})
 
     # create 2 workers, each hold a GPU
     resource_pool = RayResourcePool([2], use_gpu=True, name_prefix="a")
 
-    class_with_args = RayClassWithInitArgs(cls=ModelActor)
+    class_with_args = RayClassWithInitArgs.from_class_init(ClassWithInitArgs(cls=ModelActor))
     shard_wg = RayWorkerGroup(resource_pool, class_with_args, device_name=get_device_name())
 
     test_bs = 8
@@ -82,4 +83,5 @@ def test():
 
     torch.testing.assert_close(ret_proto1.batch["decode_count"], ret_proto2.batch["decode_count"])
 
+    runtime.close()
     ray.shutdown()

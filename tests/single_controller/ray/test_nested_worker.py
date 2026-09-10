@@ -15,6 +15,7 @@
 
 import ray
 
+from verl.runtime import ClassWithInitArgs, Runtime
 from verl.single_controller.base.decorator import Dispatch, register
 from verl.single_controller.base.worker import Worker
 from verl.single_controller.ray.base import RayClassWithInitArgs, RayResourcePool, RayWorkerGroup
@@ -44,10 +45,11 @@ class TestHighLevelActor(Worker):
 
 def test_nested_worker():
     ray.init(num_cpus=100)
+    runtime = Runtime.from_config({"backend": "ray", "ray": {}})
 
     # create 4 workers, each hold a GPU
     resource_pool = RayResourcePool([4], use_gpu=True)
-    class_with_args = RayClassWithInitArgs(cls=ray.remote(TestActor), x=2)
+    class_with_args = RayClassWithInitArgs.from_class_init(ClassWithInitArgs(cls=TestActor, x=2))
 
     worker_group = RayWorkerGroup(
         resource_pool=resource_pool,
@@ -60,7 +62,7 @@ def test_nested_worker():
 
     assert output == [2, 3, 4, 5]
 
-    class_with_args = RayClassWithInitArgs(cls=ray.remote(TestHighLevelActor), x=2)
+    class_with_args = RayClassWithInitArgs.from_class_init(ClassWithInitArgs(cls=TestHighLevelActor, x=2))
     high_level_worker_group = RayWorkerGroup(
         resource_pool=resource_pool,
         ray_cls_with_init=class_with_args,
@@ -72,4 +74,5 @@ def test_nested_worker():
 
     assert output_1 == [2, 3, 4, 5]
 
+    runtime.close()
     ray.shutdown()

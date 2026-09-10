@@ -14,10 +14,12 @@
 
 import os
 
+import pytest
 import ray
 import torch
 
 from verl import DataProto
+from verl.runtime import ClassWithInitArgs, Runtime
 from verl.single_controller.base import Worker
 from verl.single_controller.base.decorator import Dispatch, register
 from verl.single_controller.ray.base import (
@@ -33,7 +35,6 @@ def get_local_gpus_num(division=1):
     return max(1, torch.cuda.device_count() // division)
 
 
-@ray.remote
 class Actor(Worker):
     def __init__(self, worker_id) -> None:
         super().__init__()
@@ -53,6 +54,7 @@ class Actor(Worker):
 
 def test_split_resource_pool_with_split_size():
     ray.init()
+    runtime = Runtime.from_config({"backend": "ray", "ray": {}})
     ngpus = torch.cuda.device_count()
     half = get_local_gpus_num(2)
     # simulate 2 nodes of half GPUs each
@@ -62,8 +64,8 @@ def test_split_resource_pool_with_split_size():
     actor_1_resource_pool, actor_2_resource_pool = split_resource_pool(
         resource_pool=global_resource_pool, split_size=half
     )
-    actor_cls_1 = RayClassWithInitArgs(cls=Actor, worker_id=0)
-    actor_cls_2 = RayClassWithInitArgs(cls=Actor, worker_id=100)
+    actor_cls_1 = RayClassWithInitArgs.from_class_init(ClassWithInitArgs(cls=Actor, worker_id=0))
+    actor_cls_2 = RayClassWithInitArgs.from_class_init(ClassWithInitArgs(cls=Actor, worker_id=100))
     actor_worker_1 = RayWorkerGroup(
         resource_pool=actor_1_resource_pool, ray_cls_with_init=actor_cls_1, device_name=get_device_name()
     )
@@ -79,11 +81,13 @@ def test_split_resource_pool_with_split_size():
     assert actor_output_1.batch["a"].tolist() == [float(r) for r in range(half) for _ in range(2)]
     assert actor_output_2.batch["a"].tolist() == [float(r + 100) for r in range(half) for _ in range(2)]
 
+    runtime.close()
     ray.shutdown()
 
 
 def test_split_resource_pool_with_split_size_list():
     ray.init()
+    runtime = Runtime.from_config({"backend": "ray", "ray": {}})
     quarter = get_local_gpus_num(4)
     # simulate 4 nodes of quarter GPUs each
     global_resource_pool = RayResourcePool(process_on_nodes=[quarter] * 4)
@@ -93,8 +97,8 @@ def test_split_resource_pool_with_split_size_list():
         resource_pool=global_resource_pool,
         split_size=[quarter, 3 * quarter],
     )
-    actor_cls_1 = RayClassWithInitArgs(cls=Actor, worker_id=0)
-    actor_cls_2 = RayClassWithInitArgs(cls=Actor, worker_id=100)
+    actor_cls_1 = RayClassWithInitArgs.from_class_init(ClassWithInitArgs(cls=Actor, worker_id=0))
+    actor_cls_2 = RayClassWithInitArgs.from_class_init(ClassWithInitArgs(cls=Actor, worker_id=100))
     actor_worker_1 = RayWorkerGroup(
         resource_pool=actor_1_resource_pool, ray_cls_with_init=actor_cls_1, device_name=get_device_name()
     )
@@ -113,47 +117,44 @@ def test_split_resource_pool_with_split_size_list():
     assert actor_output_1.batch["a"].tolist() == list(range(quarter))
     assert actor_output_2.batch["a"].tolist() == list(range(100, 100 + 3 * quarter))
 
+    runtime.close()
     ray.shutdown()
 
 
-def test_split_resource_pool_with_split_size_list_cross_nodes():
+def test_split_resource_pool_rejects_partial_nodes_then_reuses_pool():
     ray.init()
-    half = get_local_gpus_num(2)
-    quarter = get_local_gpus_num(4)
-    # simulate 2 nodes of half GPUs each (cross-node split)
-    global_resource_pool = RayResourcePool(process_on_nodes=[half, half])
-    global_resource_pool.get_placement_groups(device_name=get_device_name())
+    runtime = Runtime.from_config({"backend": "ray", "ray": {}})
+    try:
+        half = get_local_gpus_num(2)
+        quarter = get_local_gpus_num(4)
+        global_resource_pool = RayResourcePool(process_on_nodes=[half, half])
+        global_resource_pool.get_placement_groups(device_name=get_device_name())
 
-    actor_1_resource_pool, actor_2_resource_pool = split_resource_pool(
-        resource_pool=global_resource_pool,
-        split_size=[quarter, 3 * quarter],
-    )
-    actor_cls_1 = RayClassWithInitArgs(cls=Actor, worker_id=0)
-    actor_cls_2 = RayClassWithInitArgs(cls=Actor, worker_id=100)
-    actor_worker_1 = RayWorkerGroup(
-        resource_pool=actor_1_resource_pool, ray_cls_with_init=actor_cls_1, device_name=get_device_name()
-    )
-    actor_worker_2 = RayWorkerGroup(
-        resource_pool=actor_2_resource_pool, ray_cls_with_init=actor_cls_2, device_name=get_device_name()
-    )
+        with pytest.raises(ValueError, match="homogeneous process count"):
+            split_resource_pool(resource_pool=global_resource_pool, split_size=[quarter, 3 * quarter])
 
-    assert actor_worker_1.world_size == quarter
-    assert actor_worker_2.world_size == 3 * quarter
-
-    data_1 = DataProto.from_dict({"a": torch.zeros(quarter)})
-    data_2 = DataProto.from_dict({"a": torch.zeros(3 * quarter)})
-    actor_output_1 = actor_worker_1.add(data_1)
-    actor_output_2 = actor_worker_2.add(data_2)
-    print(actor_output_1.batch["a"].tolist())
-    print(actor_output_2.batch["a"].tolist())
-    assert actor_output_1.batch["a"].tolist() == list(range(quarter))
-    assert actor_output_2.batch["a"].tolist() == list(range(100, 100 + 3 * quarter))
-
-    ray.shutdown()
+        # A rejected non-rectangular view must not prevent valid whole-node reuse.
+        first, second = split_resource_pool(resource_pool=global_resource_pool, split_size=[half, half])
+        workers = [
+            RayWorkerGroup(
+                resource_pool=pool,
+                ray_cls_with_init=RayClassWithInitArgs.from_class_init(ClassWithInitArgs(cls=Actor, worker_id=offset)),
+                device_name=get_device_name(),
+            )
+            for pool, offset in ((first, 0), (second, 100))
+        ]
+        for worker, offset in zip(workers, (0, 100), strict=True):
+            assert worker.world_size == half
+            output = worker.add(DataProto.from_dict({"a": torch.zeros(half)}))
+            assert output.batch["a"].tolist() == list(range(offset, offset + half))
+    finally:
+        runtime.close()
+        ray.shutdown()
 
 
 def test_split_resource_pool_with_split_twice():
     ray.init()
+    runtime = Runtime.from_config({"backend": "ray", "ray": {}})
     ngpus = torch.cuda.device_count()
     quarter = get_local_gpus_num(4)
     mid = ngpus - 2 * quarter  # middle pool size
@@ -175,11 +176,12 @@ def test_split_resource_pool_with_split_twice():
         correct_output.append([float(r + idx * 100) for r in range(ws) for _ in range(4 // ws)])
 
     for idx, rp in enumerate(fp_list):
-        actor_cls = RayClassWithInitArgs(cls=Actor, worker_id=idx * 100)
+        actor_cls = RayClassWithInitArgs.from_class_init(ClassWithInitArgs(cls=Actor, worker_id=idx * 100))
         actor_worker = RayWorkerGroup(resource_pool=rp, ray_cls_with_init=actor_cls, device_name=get_device_name())
         data = DataProto.from_dict({"a": torch.zeros(4)})
         actor_output = actor_worker.add(data)
         assert actor_worker.world_size == correct_world_size[idx]
         assert actor_output.batch["a"].tolist() == correct_output[idx]
 
+    runtime.close()
     ray.shutdown()

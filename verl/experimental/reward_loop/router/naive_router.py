@@ -21,12 +21,11 @@ import time
 from typing import Any
 
 import aiohttp
-import ray
 import uvicorn
 from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse
 
-from verl.utils.net_utils import get_free_port, is_valid_ipv6_address
+from verl.utils.net_utils import get_free_port, get_local_ip_address, is_valid_ipv6_address
 
 logger = logging.getLogger(__name__)
 logger.setLevel(os.getenv("VERL_LOGGING_LEVEL", "WARN"))
@@ -52,7 +51,7 @@ async def _read_async_response(resp: aiohttp.ClientResponse) -> dict[str, Any]:
 def launch_router_process(
     worker_urls: list[str],
 ):
-    router_ip = ray.util.get_node_ip_address().strip("[]")
+    router_ip = get_local_ip_address().strip("[]")
     router_port, _ = get_free_port(router_ip)
     router_address = (
         f"[{router_ip}]:{router_port}" if is_valid_ipv6_address(router_ip) else f"{router_ip}:{router_port}"
