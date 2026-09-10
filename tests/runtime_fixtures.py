@@ -23,7 +23,7 @@ from typing import Any
 
 import pytest
 
-BACKENDS = ("ray",)
+BACKENDS = ("ray", "monarch")
 
 
 @pytest.fixture(scope="session", autouse=True)

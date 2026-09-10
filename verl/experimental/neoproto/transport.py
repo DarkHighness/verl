@@ -66,7 +66,13 @@ class _RefTableTransport:
         if isinstance(store, RayObjectStore):
             references = [store.put(key, table)] * readers
         else:
-            raise TypeError(f"unsupported NeoProto shared-publication store: {type(store)!r}")
+            # Importing the TorchStore client starts its event-loop thread; keep
+            # that out of Ray processes.
+            from verl.single_controller.monarch.object_store import TorchStoreObjectStore
+
+            if not isinstance(store, TorchStoreObjectStore):
+                raise TypeError(f"unsupported NeoProto shared-publication store: {type(store)!r}")
+            references = store.put_many([(f"{key}-{rank}", table) for rank in range(readers)])
         transports = [cls(table, key_prefix=f"{key_prefix}-{rank}") for rank in range(readers)]
         for transport, reference in zip(transports, references, strict=True):
             transport._prepared_reference = reference

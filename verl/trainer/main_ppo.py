@@ -77,7 +77,6 @@ def _build_ppo_runtime_config(config: DictConfig, default_env_vars: dict[str, st
 
     topology_config = config.get("topology")
     runtime_config["topology"] = OmegaConf.to_container(topology_config, resolve=True) if topology_config else {}
-
     backend = select_backend(runtime_config)
     if backend == "ray":
         ray_init_kwargs = config.ray_kwargs.get("ray_init", {})
