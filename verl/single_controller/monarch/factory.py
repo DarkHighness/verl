@@ -171,6 +171,7 @@ class MonarchRuntimeBackend:
                     store_name=f"{options.store_name_prefix}_{uuid4().hex}",
                     timeout_s=options.timeout_s,
                     strategy=options.strategy,
+                    local_cache_bytes=options.local_cache_bytes,
                 )
             config.update(self._object_store_backend.client_config)
         if not config:

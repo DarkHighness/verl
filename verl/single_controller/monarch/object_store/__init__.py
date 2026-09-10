@@ -17,11 +17,13 @@
 from __future__ import annotations
 
 from verl.single_controller.monarch.object_store.store import (
+    TensorRowRange,
     TorchStoreObjectStore,
     TorchStoreReference,
 )
 
 __all__ = [
+    "TensorRowRange",
     "TorchStoreObjectStore",
     "TorchStoreReference",
 ]

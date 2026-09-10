@@ -24,6 +24,8 @@ from verl.single_controller.monarch.object_store.store import _run
 if TYPE_CHECKING:
     from monarch.actor import ProcMesh
 
+    from verl.single_controller.monarch.object_store.ref_count import RefCountActor
+
 
 class TorchStoreBackend:
     """Own one process-global TorchStore instance and its volume mesh."""
@@ -33,15 +35,21 @@ class TorchStoreBackend:
         store_name: str,
         *,
         proc_mesh: ProcMesh | None = None,
+        ref_count_actors: RefCountActor | None = None,
         timeout_s: float = 300.0,
+        local_cache_bytes: int = 0,
     ) -> None:
         if not isinstance(store_name, str) or not store_name:
             raise ValueError(f"store_name must be a non-empty str, got {store_name!r}")
         if not isinstance(timeout_s, int | float) or isinstance(timeout_s, bool) or timeout_s <= 0:
             raise ValueError(f"timeout_s must be a positive number, got {timeout_s!r}")
+        if isinstance(local_cache_bytes, bool) or not isinstance(local_cache_bytes, int) or local_cache_bytes < 0:
+            raise ValueError("local_cache_bytes must be a nonnegative integer")
+        self._local_cache_bytes = local_cache_bytes
         self._store_name = store_name
         self._timeout_s = float(timeout_s)
         self._proc_mesh = proc_mesh
+        self._ref_count_actors = ref_count_actors
         self._store_closed = False
 
     @classmethod
@@ -52,6 +60,7 @@ class TorchStoreBackend:
         store_name: str,
         timeout_s: float,
         strategy: str = "host",
+        local_cache_bytes: int = 0,
     ) -> TorchStoreBackend:
         """Start one CPU volume ProcMesh on ``pool`` and initialize the store.
 
@@ -59,7 +68,7 @@ class TorchStoreBackend:
         AttachSpec. This owner only creates and owns the volume mesh plus the
         global store.
         """
-        backend = cls(store_name, timeout_s=timeout_s)
+        backend = cls(store_name, timeout_s=timeout_s, local_cache_bytes=local_cache_bytes)
         if strategy not in ("host", "local_rank"):
             raise ValueError(f"unsupported TorchStore strategy {strategy!r}")
         timeout_s = backend._timeout_s
@@ -82,7 +91,7 @@ class TorchStoreBackend:
             initialized = volume_mesh.initialized
             if initialized is not None:
                 initialized.get(timeout=timeout_s)
-            _run(
+            backend._ref_count_actors = _run(
                 _async_initialize(
                     store_name=store_name,
                     num_storage_volumes=num_storage_volumes,
@@ -102,6 +111,10 @@ class TorchStoreBackend:
     def client_config(self) -> dict[str, object]:
         """Serializable configuration used by every process-local client."""
         result: dict[str, object] = {"store_name": self._store_name}
+        if self._ref_count_actors is not None:
+            result["ref_count_actors"] = self._ref_count_actors
+        if self._local_cache_bytes:
+            result["local_cache_bytes"] = self._local_cache_bytes
         return result
 
     @property
@@ -115,7 +128,7 @@ class TorchStoreBackend:
         if self._proc_mesh is None:
             raise RuntimeError("Only the TorchStoreBackend returned by start() owns lifecycle")
         if not self._store_closed:
-            _run(_async_shutdown(self._store_name), timeout_s=self._timeout_s)
+            _run(_async_shutdown(self._store_name, self._ref_count_actors), timeout_s=self._timeout_s)
             self._store_closed = True
         self._proc_mesh.stop().get(timeout=self._timeout_s)
         self._proc_mesh = None
@@ -132,9 +145,11 @@ async def _async_initialize(
     num_storage_volumes: int,
     mesh: ProcMesh,
     strategy: str,
-) -> None:
+) -> RefCountActor:
     import torchstore as ts
     from torchstore.strategy import HostStrategy, LocalRankStrategy
+
+    from verl.single_controller.monarch.object_store.ref_count import RefCountActor
 
     if strategy == "host":
         placement_strategy = HostStrategy()
@@ -149,11 +164,18 @@ async def _async_initialize(
         store_name=store_name,
         mesh=mesh,
     )
+    # Same ProcMesh and coordinates as native StorageVolume actors: host gets
+    # one owner per host; local_rank gets one per volume rank. No new processes.
+    return mesh.spawn(f"{_mesh_name(store_name)}_ref_counts", RefCountActor, store_name)
 
 
-async def _async_shutdown(store_name: str) -> None:
+async def _async_shutdown(store_name: str, owners: RefCountActor | None = None) -> None:
     import torchstore as ts
 
+    from verl.single_controller.monarch.object_store.ref_count import close_ref_counts
+
+    if owners is not None:
+        await close_ref_counts(owners)
     await ts.shutdown(store_name=store_name)
 
 

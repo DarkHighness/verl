@@ -72,7 +72,7 @@ class _RefTableTransport:
 
             if not isinstance(store, TorchStoreObjectStore):
                 raise TypeError(f"unsupported NeoProto shared-publication store: {type(store)!r}")
-            references = store.put_many([(f"{key}-{rank}", table) for rank in range(readers)])
+            references = store.put_shared(key, table, readers)
         transports = [cls(table, key_prefix=f"{key_prefix}-{rank}") for rank in range(readers)]
         for transport, reference in zip(transports, references, strict=True):
             transport._prepared_reference = reference

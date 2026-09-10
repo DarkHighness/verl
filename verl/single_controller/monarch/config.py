@@ -29,6 +29,7 @@ class _TorchStoreConfig:
     store_name_prefix: str
     timeout_s: float
     strategy: Literal["host", "local_rank"]
+    local_cache_bytes: int
 
 
 @dataclass(frozen=True, slots=True)
@@ -102,10 +103,14 @@ def _parse_object_store_config(value: object | None) -> _TorchStoreConfig:
     strategy = value.get("strategy", "host")
     if strategy not in ("host", "local_rank"):
         raise ValueError(f"strategy must be 'host' or 'local_rank', got {strategy!r}")
+    local_cache_bytes = value.get("local_cache_bytes", 0)
+    if isinstance(local_cache_bytes, bool) or not isinstance(local_cache_bytes, int) or local_cache_bytes < 0:
+        raise ValueError("local_cache_bytes must be a nonnegative integer")
     return _TorchStoreConfig(
         store_name_prefix=store_name_prefix,
         timeout_s=timeout_s,
         strategy=strategy,
+        local_cache_bytes=local_cache_bytes,
     )
 
 

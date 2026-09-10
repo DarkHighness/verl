@@ -39,7 +39,8 @@ commit as the baseline. Performance uses two reversed-order repetitions, drops
 two warmup steps, and retains the configured throughput threshold.
 
 Both modes use NeoProto only. RUNTIME_MATRIX_TORCHSTORE_STRATEGY selects host or
-local_rank volume placement.
+local_rank volume placement. TORCHSTORE_LOCAL_CACHE_BYTES overrides the Monarch
+cache budget when supplied; the backend recipe otherwise determines it.
 """
 
 from __future__ import annotations
